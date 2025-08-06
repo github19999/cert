@@ -2,7 +2,7 @@
 
 # SSL证书一键部署脚本
 # 文件名: deploy-cert.sh
-# 作者: Auto Generated
+# 作者: github19999
 # 版本: 1.0
 # 使用方法: bash <(curl -sSL https://raw.githubusercontent.com/用户名/cert/refs/heads/main/deploy-cert.sh)
 
