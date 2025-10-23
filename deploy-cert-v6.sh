@@ -487,10 +487,10 @@ install_dependencies() {
     local packages=""
     case $OS in
         "debian")
-            packages="curl wget socat cron openssl ca-certificates dnsutils"
+            packages="curl wget socat cron openssl ca-certificates dnsutils git"
             ;;
         "centos")
-            packages="curl wget socat cronie openssl ca-certificates bind-utils"
+            packages="curl wget socat cronie openssl ca-certificates bind-utils git"
             ;;
     esac
     
@@ -517,123 +517,179 @@ install_acme_client() {
         log_info "ACME客户端已安装，检查更新..."
         /root/.acme.sh/acme.sh --upgrade 2>&1 | tee /tmp/acme_upgrade.log || true
         log_success "ACME客户端更新完成"
-    else
-        log_info "下载并安装ACME客户端..."
+        # 配置并返回
+        ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh 2>/dev/null || true
+        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+        log_success "ACME客户端配置完成"
+        return 0
+    fi
+    
+    log_info "开始安装ACME客户端..."
+    local install_success=false
+    
+    # IPv6环境使用Git方式（最可靠）
+    if [[ $NETWORK_MODE == "ipv6" ]]; then
+        log_info "检测到纯IPv6环境，优先使用Git方式安装..."
         
-        # IPv6环境特殊处理
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
-            log_info "检测到纯IPv6环境，使用Git方式安装..."
-            
-            # 方法1: 使用Git克隆 (最可靠)
-            if command -v git >/dev/null 2>&1; then
-                log_info "尝试使用Git安装..."
-                cd /root
-                if git clone https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git 2>&1 | tee /tmp/acme_install.log; then
-                    cd /tmp/acme.sh.git
-                    if ./acme.sh --install --nocron 2>&1 | tee -a /tmp/acme_install.log; then
-                        log_success "ACME客户端安装成功 (Git方式)"
-                        rm -rf /tmp/acme.sh.git
-                        cd /root
-                    else
-                        log_error "Git安装失败"
-                        cd /root
-                        rm -rf /tmp/acme.sh.git
-                    fi
-                else
-                    log_warning "Git克隆失败，尝试其他方法..."
-                    cd /root
-                fi
-            else
-                log_info "Git未安装，尝试安装Git..."
-                $INSTALL_CMD git 2>&1 | tee /tmp/git_install.log
-                if command -v git >/dev/null 2>&1; then
-                    log_success "Git安装成功，重新尝试..."
-                    cd /root
-                    if git clone https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git; then
-                        cd /tmp/acme.sh.git
-                        if ./acme.sh --install --nocron; then
-                            log_success "ACME客户端安装成功 (Git方式)"
-                            rm -rf /tmp/acme.sh.git
-                            cd /root
-                        fi
-                    fi
-                fi
-            fi
-            
-            # 方法2: 强制使用curl/wget的IPv6模式
-            if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
-                log_info "尝试使用curl IPv6模式..."
-                
-                # 尝试curl -6
-                if curl -6 -sSL https://get.acme.sh 2>/tmp/curl_error.log | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                    log_success "ACME客户端安装成功 (curl IPv6)"
-                elif curl -sSL https://get.acme.sh 2>/tmp/curl_error.log | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                    log_success "ACME客户端安装成功 (curl)"
-                else
-                    log_warning "curl安装失败，尝试wget..."
-                    cat /tmp/curl_error.log
-                    
-                    # 尝试wget
-                    if wget -6 -O- https://get.acme.sh 2>/tmp/wget_error.log | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                        log_success "ACME客户端安装成功 (wget IPv6)"
-                    elif wget -O- https://get.acme.sh 2>/tmp/wget_error.log | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                        log_success "ACME客户端安装成功 (wget)"
-                    else
-                        log_error "wget安装失败"
-                        cat /tmp/wget_error.log
-                    fi
-                fi
-            fi
-            
-        else
-            # IPv4或双栈环境 - 标准安装
-            log_info "使用标准安装方式..."
-            
-            if curl -sSL https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                log_success "ACME客户端安装成功"
-            else
-                log_warning "curl安装失败，尝试wget..."
-                if wget -O- https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install.log; then
-                    log_success "ACME客户端安装成功 (wget)"
-                else
-                    log_error "ACME客户端安装失败"
-                    echo "安装日志已保存到: /tmp/acme_install.log"
-                    cat /tmp/acme_install.log
-                    exit 1
-                fi
-            fi
+        # 确保Git已安装
+        if ! command -v git >/dev/null 2>&1; then
+            log_info "正在安装Git..."
+            $INSTALL_CMD git 2>&1 | tee /tmp/git_install.log
         fi
         
-        # 最终检查是否安装成功
-        if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
-            log_error "ACME客户端安装失败，文件不存在"
-            echo ""
-            echo -e "${YELLOW}请尝试以下手动安装方法:${NC}"
-            echo "1. 使用Git: git clone https://github.com/acmesh-official/acme.sh.git && cd acme.sh && ./acme.sh --install"
-            echo "2. 检查安装日志: cat /tmp/acme_install.log"
-            echo "3. 检查网络连接: ping6 github.com 或 ping6 get.acme.sh"
-            exit 1
+        if command -v git >/dev/null 2>&1; then
+            log_info "使用Git克隆ACME.sh仓库..."
+            cd /root
+            
+            # 清理可能存在的旧目录
+            rm -rf /tmp/acme.sh.git
+            
+            # 克隆仓库
+            echo "正在从GitHub克隆，请稍候..."
+            if timeout 120 git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git 2>&1 | tee /tmp/acme_git_clone.log; then
+                log_success "仓库克隆成功"
+                
+                # 执行安装
+                cd /tmp/acme.sh.git
+                log_info "执行安装脚本..."
+                if ./acme.sh --install --home /root/.acme.sh --config-home /root/.acme.sh 2>&1 | tee /tmp/acme_install.log; then
+                    log_success "ACME客户端安装成功 (Git方式)"
+                    install_success=true
+                else
+                    log_warning "Git方式安装失败，查看日志: /tmp/acme_install.log"
+                fi
+                
+                # 清理
+                cd /root
+                rm -rf /tmp/acme.sh.git
+            else
+                log_warning "Git克隆失败或超时"
+                echo "可能的原因："
+                echo "  1. GitHub连接问题"
+                echo "  2. 网络超时"
+                echo "  3. DNS解析问题"
+                echo ""
+                cat /tmp/acme_git_clone.log 2>/dev/null || true
+            fi
+        else
+            log_warning "Git安装失败，将尝试其他方式"
         fi
     fi
+    
+    # 如果Git方式失败或非IPv6环境，尝试curl/wget
+    if [[ $install_success == false ]]; then
+        log_info "尝试使用在线安装脚本..."
+        
+        # 方法1: curl
+        if command -v curl >/dev/null 2>&1; then
+            log_info "尝试curl安装..."
+            
+            # IPv6环境强制使用-6
+            if [[ $NETWORK_MODE == "ipv6" ]]; then
+                echo "使用IPv6模式下载..."
+                if timeout 60 curl -6 -sSL https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_curl.log; then
+                    install_success=true
+                    log_success "ACME客户端安装成功 (curl -6)"
+                fi
+            else
+                if timeout 60 curl -sSL https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_curl.log; then
+                    install_success=true
+                    log_success "ACME客户端安装成功 (curl)"
+                fi
+            fi
+            
+            if [[ $install_success == false ]]; then
+                log_warning "curl安装失败"
+                cat /tmp/acme_install_curl.log 2>/dev/null || true
+            fi
+        fi
+        
+        # 方法2: wget
+        if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
+            log_info "尝试wget安装..."
+            
+            # IPv6环境
+            if [[ $NETWORK_MODE == "ipv6" ]]; then
+                echo "使用IPv6模式下载..."
+                if timeout 60 wget -6 --no-check-certificate -O- https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_wget.log; then
+                    install_success=true
+                    log_success "ACME客户端安装成功 (wget -6)"
+                fi
+            else
+                if timeout 60 wget --no-check-certificate -O- https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_wget.log; then
+                    install_success=true
+                    log_success "ACME客户端安装成功 (wget)"
+                fi
+            fi
+            
+            if [[ $install_success == false ]]; then
+                log_warning "wget安装失败"
+                cat /tmp/acme_install_wget.log 2>/dev/null || true
+            fi
+        fi
+    fi
+    
+    # 检查安装结果
+    if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+        install_success=true
+    fi
+    
+    if [[ $install_success == false ]]; then
+        log_error "ACME客户端安装失败"
+        echo ""
+        echo -e "${RED}所有安装方法均失败！${NC}"
+        echo ""
+        echo -e "${YELLOW}请检查以下问题:${NC}"
+        echo "  1. 网络连接是否正常"
+        if [[ $NETWORK_MODE == "ipv6" ]]; then
+            echo "  2. 测试IPv6连接: ping6 google.com"
+            echo "  3. 测试GitHub访问: curl -6 -I https://github.com"
+            echo "  4. 检查DNS: nslookup -query=AAAA github.com"
+        else
+            echo "  2. 测试网络: ping google.com"
+            echo "  3. 测试GitHub访问: curl -I https://github.com"
+        fi
+        echo ""
+        echo -e "${YELLOW}查看安装日志:${NC}"
+        echo "  cat /tmp/acme_install.log"
+        echo "  cat /tmp/acme_git_clone.log"
+        echo "  cat /tmp/acme_install_curl.log"
+        echo "  cat /tmp/acme_install_wget.log"
+        echo ""
+        echo -e "${YELLOW}手动安装方法:${NC}"
+        echo "  cd /root"
+        echo "  git clone https://github.com/acmesh-official/acme.sh.git"
+        echo "  cd acme.sh"
+        echo "  ./acme.sh --install"
+        echo ""
+        exit 1
+    fi
+    
+    # 配置ACME客户端
+    log_info "配置ACME客户端..."
     
     # 创建软链接
     ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh 2>/dev/null || true
     
-    # 配置默认CA
-    log_info "配置证书颁发机构 (Let's Encrypt)..."
+    # 设置默认CA为Let's Encrypt
     /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>&1 | tee /tmp/acme_config.log || true
     
-    # 如果是IPv6环境，配置IPv6支持
+    # IPv6环境额外配置
     if [[ $NETWORK_MODE == "ipv6" ]]; then
-        log_info "配置IPv6支持..."
-        # 设置ACME.sh使用IPv6
-        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-        # 创建配置文件确保IPv6优先
+        log_info "配置IPv6专用设置..."
         mkdir -p /root/.acme.sh/
-        echo 'export ACME_USE_WGET=1' >> /root/.acme.sh/account.conf 2>/dev/null || true
+        
+        # 确保使用wget（对IPv6支持更好）
+        if ! grep -q "ACME_USE_WGET" /root/.acme.sh/account.conf 2>/dev/null; then
+            echo 'export ACME_USE_WGET=1' >> /root/.acme.sh/account.conf
+        fi
+        
+        log_info "IPv6配置完成"
     fi
     
-    log_success "ACME客户端配置完成"
+    log_success "ACME客户端安装配置完成"
+    log_info "版本信息:"
+    /root/.acme.sh/acme.sh --version 2>/dev/null || echo "无法获取版本信息"
 }
 
 # 申请SSL证书 (支持IPv6)
