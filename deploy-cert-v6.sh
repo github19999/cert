@@ -557,7 +557,10 @@ install_acme_client() {
             
             # 克隆仓库（带超时和进度显示）
             echo "正在克隆，预计需要10-30秒..."
-            if timeout 120 git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git 2>&1 | tee /tmp/acme_git_clone.log; then
+            timeout 120 git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git 2>&1 | tee /tmp/acme_git_clone.log
+            
+            # 检查克隆是否真正成功（检查目录和关键文件）
+            if [[ -d "/tmp/acme.sh.git" ]] && [[ -f "/tmp/acme.sh.git/acme.sh" ]]; then
                 log_success "仓库克隆成功"
                 
                 # 执行安装
@@ -576,8 +579,12 @@ install_acme_client() {
                 rm -rf /tmp/acme.sh.git
             else
                 log_warning "Git克隆失败或超时"
-                echo -e "${YELLOW}克隆日志:${NC}"
-                cat /tmp/acme_git_clone.log 2>/dev/null | tail -20
+                echo -e "${YELLOW}错误信息:${NC}"
+                cat /tmp/acme_git_clone.log 2>/dev/null | grep -i "fatal\|error\|failed" || cat /tmp/acme_git_clone.log 2>/dev/null | tail -10
+                
+                # 清理失败的克隆
+                rm -rf /tmp/acme.sh.git
+                cd /root
             fi
         else
             log_warning "Git安装失败，跳过Git方式"
