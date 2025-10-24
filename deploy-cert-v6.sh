@@ -3,7 +3,7 @@
 # SSL证书一键部署脚本 (支持IPv6)
 # 文件名: deploy-cert.sh
 # 作者: github19999
-# 版本: 1.2 (IPv6增强版 - 完全重写)
+# 版本: 1.1
 # 使用方法: bash <(curl -sSL https://raw.githubusercontent.com/用户名/cert/refs/heads/main/deploy-cert.sh)
 
 set -e  # 遇到错误立即退出
@@ -18,7 +18,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 全局变量
-SCRIPT_VERSION="1.2"
+SCRIPT_VERSION="1.1"
 STOPPED_SERVICES=()
 DOMAINS=()
 MAIN_DOMAIN=""
@@ -28,7 +28,7 @@ INSTALL_CMD=""
 UPDATE_CMD=""
 HAS_IPV4=false
 HAS_IPV6=false
-NETWORK_MODE=""  # "ipv4", "ipv6", "dual"
+USE_IPV6_ONLY=false
 
 # 日志函数
 log_info() {
@@ -56,17 +56,16 @@ show_banner() {
     clear
     echo -e "${CYAN}"
     echo "=============================================="
-    echo "   SSL证书一键部署脚本 v${SCRIPT_VERSION}"
-    echo "          (支持IPv4/IPv6双栈)"
+    echo "     SSL证书一键部署脚本 v${SCRIPT_VERSION}"
     echo "=============================================="
     echo -e "${NC}"
     echo -e "${YELLOW}功能特性:${NC}"
     echo "  ✓ 交互式域名配置"
     echo "  ✓ 多域名证书支持"
     echo "  ✓ 智能服务管理"
-    echo "  ✓ IPv4/IPv6自动检测"
-    echo "  ✓ 纯IPv6环境支持"
     echo "  ✓ 系统兼容性检测"
+    echo "  ✓ IPv4/IPv6 双栈支持"
+    echo "  ✓ 纯IPv6环境支持"
     echo "  ✓ 完善错误处理"
     echo "  ✓ 自动续期设置"
     echo "  ✓ 安全权限配置"
@@ -86,64 +85,62 @@ check_root() {
     log_success "Root权限检查通过"
 }
 
-# 检测网络类型 (IPv4/IPv6)
-detect_network_type() {
-    log_step "检测网络类型..."
+# 检测IPv4/IPv6网络环境
+detect_network_stack() {
+    log_step "检测网络协议栈..."
     
     # 检测IPv4
-    if ip -4 addr show 2>/dev/null | grep -q "inet.*scope global" 2>/dev/null; then
+    if ip -4 addr show | grep -q "inet.*global" 2>/dev/null; then
         HAS_IPV4=true
         log_info "检测到IPv4地址"
     fi
     
     # 检测IPv6
-    if ip -6 addr show 2>/dev/null | grep -q "inet6.*scope global" 2>/dev/null; then
+    if ip -6 addr show | grep -q "inet6.*global" 2>/dev/null; then
         HAS_IPV6=true
         log_info "检测到IPv6地址"
     fi
     
-    # 确定网络模式
+    # 判断网络类型
     if [[ $HAS_IPV4 == true && $HAS_IPV6 == true ]]; then
-        NETWORK_MODE="dual"
-        log_success "网络类型: IPv4/IPv6 双栈"
+        log_success "双栈网络环境 (IPv4 + IPv6)"
     elif [[ $HAS_IPV4 == true ]]; then
-        NETWORK_MODE="ipv4"
-        log_success "网络类型: 仅IPv4"
+        log_success "IPv4单栈网络环境"
     elif [[ $HAS_IPV6 == true ]]; then
-        NETWORK_MODE="ipv6"
-        log_success "网络类型: 仅IPv6"
-        log_warning "检测到纯IPv6环境，将使用IPv6专用配置"
+        log_success "IPv6单栈网络环境"
+        USE_IPV6_ONLY=true
+        log_warning "检测到纯IPv6环境，将使用IPv6优化模式"
     else
-        log_error "未检测到可用的网络连接"
+        log_error "未检测到有效的网络连接"
         exit 1
     fi
 }
 
-# 检查网络连接 (支持IPv6)
+# 检查网络连接
 check_network() {
     log_step "检查网络连接..."
     
     local network_ok=false
     
-    if [[ $NETWORK_MODE == "ipv4" || $NETWORK_MODE == "dual" ]]; then
-        # IPv4连接测试
-        local ipv4_hosts=("8.8.8.8" "1.1.1.1" "114.114.114.114")
-        for host in "${ipv4_hosts[@]}"; do
+    # IPv4网络测试
+    if [[ $HAS_IPV4 == true ]]; then
+        local test_hosts=("8.8.8.8" "1.1.1.1" "114.114.114.114")
+        for host in "${test_hosts[@]}"; do
             if ping -4 -c 1 -W 3 "$host" >/dev/null 2>&1; then
                 network_ok=true
-                log_info "IPv4连接正常"
+                log_info "IPv4网络连接正常"
                 break
             fi
         done
     fi
     
-    if [[ $NETWORK_MODE == "ipv6" || $NETWORK_MODE == "dual" ]]; then
-        # IPv6连接测试
-        local ipv6_hosts=("2001:4860:4860::8888" "2606:4700:4700::1111" "2400:3200::1")
-        for host in "${ipv6_hosts[@]}"; do
+    # IPv6网络测试
+    if [[ $HAS_IPV6 == true ]]; then
+        local test_hosts_v6=("2001:4860:4860::8888" "2606:4700:4700::1111" "2400:3200::1")
+        for host in "${test_hosts_v6[@]}"; do
             if ping -6 -c 1 -W 3 "$host" >/dev/null 2>&1; then
                 network_ok=true
-                log_info "IPv6连接正常"
+                log_info "IPv6网络连接正常"
                 break
             fi
         done
@@ -154,20 +151,17 @@ check_network() {
         exit 1
     fi
     
-    # DNS解析测试 (适配IPv6)
-    local dns_test_domain="google.com"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        # 纯IPv6环境，测试AAAA记录
-        if nslookup -query=AAAA "$dns_test_domain" >/dev/null 2>&1 || \
-           host -t AAAA "$dns_test_domain" >/dev/null 2>&1; then
-            log_info "DNS解析正常 (IPv6)"
+    # 检查域名解析
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        # IPv6环境使用Google的IPv6 DNS
+        if nslookup -type=AAAA google.com 2001:4860:4860::8888 >/dev/null 2>&1; then
+            log_success "DNS解析正常 (IPv6)"
         else
-            log_warning "IPv6 DNS解析可能存在问题"
+            log_warning "DNS解析可能存在问题"
         fi
     else
-        # IPv4或双栈环境
-        if nslookup "$dns_test_domain" >/dev/null 2>&1; then
-            log_info "DNS解析正常"
+        if nslookup google.com >/dev/null 2>&1; then
+            log_success "DNS解析正常"
         else
             log_warning "DNS解析可能存在问题"
         fi
@@ -218,32 +212,29 @@ detect_os() {
     log_success "系统检测完成: $OS"
 }
 
-# 检查域名解析 (支持IPv6)
-check_domain_resolution() {
-    local domain=$1
-    local resolution_ok=false
-    
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        # 纯IPv6环境，检查AAAA记录
-        if nslookup -query=AAAA "$domain" >/dev/null 2>&1 || \
-           host -t AAAA "$domain" >/dev/null 2>&1 || \
-           dig AAAA "$domain" +short >/dev/null 2>&1; then
-            resolution_ok=true
-        fi
-    else
-        # IPv4或双栈环境，检查A记录
-        if nslookup "$domain" >/dev/null 2>&1 || \
-           host "$domain" >/dev/null 2>&1 || \
-           dig "$domain" +short >/dev/null 2>&1; then
-            resolution_ok=true
-        fi
+# 配置IPv6 DNS (仅IPv6环境)
+configure_ipv6_dns() {
+    if [[ $USE_IPV6_ONLY == false ]]; then
+        return
     fi
     
-    if [[ $resolution_ok == true ]]; then
-        return 0
-    else
-        return 1
+    log_step "配置IPv6 DNS服务器..."
+    
+    # 备份原有DNS配置
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf /etc/resolv.conf.bak.$(date +%s) 2>/dev/null || true
     fi
+    
+    # 添加IPv6 DNS服务器
+    cat > /etc/resolv.conf << EOF
+# IPv6 DNS Configuration
+nameserver 2001:4860:4860::8888
+nameserver 2001:4860:4860::8844
+nameserver 2606:4700:4700::1111
+nameserver 2606:4700:4700::1001
+EOF
+    
+    log_success "IPv6 DNS配置完成"
 }
 
 # 交互式域名配置
@@ -254,11 +245,12 @@ configure_domains() {
     echo -e "${YELLOW}注意事项:${NC}"
     echo "  • 支持单个或多个域名"
     echo "  • 多个域名请用空格分隔"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo "  • ${RED}当前为IPv6环境，请确保域名有AAAA记录${NC}"
-    else
-        echo "  • 确保域名已正确解析到本服务器"
+    echo "  • 确保域名已正确解析到本服务器"
+    
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        echo -e "  ${RED}• 纯IPv6环境: 请确保域名有AAAA记录${NC}"
     fi
+    
     echo "  • 示例: example.com www.example.com api.example.com"
     echo ""
     
@@ -280,17 +272,20 @@ configure_domains() {
                 log_warning "域名格式可能不正确: $domain"
             fi
             
-            # 检查域名解析 (适配IPv6)
+            # 检查域名解析
             echo -n "检查域名解析: $domain ... "
-            if check_domain_resolution "$domain"; then
-                echo -e "${GREEN}✓${NC}"
-                if [[ $NETWORK_MODE == "ipv6" ]]; then
-                    log_info "$domain 的AAAA记录解析正常"
+            if [[ $USE_IPV6_ONLY == true ]]; then
+                # 检查AAAA记录
+                if nslookup -type=AAAA "$domain" 2001:4860:4860::8888 >/dev/null 2>&1; then
+                    echo -e "${GREEN}✓ (IPv6)${NC}"
+                else
+                    echo -e "${YELLOW}!${NC} (未找到AAAA记录，但将继续)"
                 fi
             else
-                echo -e "${YELLOW}!${NC} (解析失败，但将继续)"
-                if [[ $NETWORK_MODE == "ipv6" ]]; then
-                    log_warning "$domain 可能缺少AAAA记录"
+                if nslookup "$domain" >/dev/null 2>&1; then
+                    echo -e "${GREEN}✓${NC}"
+                else
+                    echo -e "${YELLOW}!${NC} (解析失败，但将继续)"
                 fi
             fi
         done
@@ -302,7 +297,7 @@ configure_domains() {
         echo "  主域名: $MAIN_DOMAIN"
         echo "  所有域名: ${DOMAINS[*]}"
         echo "  域名数量: ${#DOMAINS[@]}"
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
+        if [[ $USE_IPV6_ONLY == true ]]; then
             echo -e "  ${YELLOW}网络模式: 仅IPv6${NC}"
         fi
         echo ""
@@ -370,7 +365,6 @@ configure_cert_path() {
     
     # 创建证书目录
     if mkdir -p "$CERT_DIR" 2>/dev/null; then
-        # 设置目录权限
         chmod 755 "$CERT_DIR"
         log_success "证书目录创建成功: $CERT_DIR"
     else
@@ -386,16 +380,26 @@ manage_web_services() {
     if [[ "$action" == "stop" ]]; then
         log_step "检测并管理Web服务..."
         
-        # 检查80端口占用 (支持IPv6)
-        local port_info=""
+        # 检查80端口占用
+        local port_check_cmd=""
         if command -v ss >/dev/null 2>&1; then
-            port_info=$(ss -tlnp | grep ":80 " 2>/dev/null)
+            if [[ $USE_IPV6_ONLY == true ]]; then
+                port_check_cmd="ss -6 -tlnp | grep ':80 '"
+            else
+                port_check_cmd="ss -tlnp | grep ':80 '"
+            fi
         elif command -v netstat >/dev/null 2>&1; then
-            port_info=$(netstat -tlnp | grep ":80 " 2>/dev/null)
+            if [[ $USE_IPV6_ONLY == true ]]; then
+                port_check_cmd="netstat -6 -tlnp | grep ':80 '"
+            else
+                port_check_cmd="netstat -tlnp | grep ':80 '"
+            fi
         else
             log_warning "无法检查端口占用 (缺少ss/netstat命令)"
             return
         fi
+        
+        local port_info=$(eval "$port_check_cmd" 2>/dev/null || true)
         
         if [[ -n "$port_info" ]]; then
             log_warning "检测到端口80被占用"
@@ -471,7 +475,7 @@ manage_web_services() {
     fi
 }
 
-# 安装系统依赖（包含Git）
+# 安装系统依赖
 install_dependencies() {
     log_step "安装系统依赖..."
     
@@ -483,14 +487,14 @@ install_dependencies() {
         log_warning "包列表更新失败，继续执行"
     fi
     
-    # 根据系统安装依赖（包含git）
+    # 根据系统安装依赖
     local packages=""
     case $OS in
         "debian")
-            packages="curl wget socat cron openssl ca-certificates dnsutils git"
+            packages="curl wget socat cron openssl ca-certificates dnsutils"
             ;;
         "centos")
-            packages="curl wget socat cronie openssl ca-certificates bind-utils git"
+            packages="curl wget socat cronie openssl ca-certificates bind-utils"
             ;;
     esac
     
@@ -501,16 +505,6 @@ install_dependencies() {
         log_warning "部分依赖安装失败，但将继续执行"
     fi
     
-    # 验证关键工具
-    local tools=("curl" "wget" "git")
-    for tool in "${tools[@]}"; do
-        if command -v "$tool" >/dev/null 2>&1; then
-            log_info "✓ $tool 已安装"
-        else
-            log_warning "✗ $tool 未安装"
-        fi
-    done
-    
     # 启动cron服务
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable cron crond >/dev/null 2>&1 || true
@@ -518,205 +512,57 @@ install_dependencies() {
     fi
 }
 
-# 安装ACME.sh客户端 (完全重写 - IPv6优化)
+# 安装ACME.sh客户端
 install_acme_client() {
     log_step "安装ACME证书客户端..."
     
     # 检查是否已安装
     if [[ -f "/root/.acme.sh/acme.sh" ]]; then
         log_info "ACME客户端已安装，检查更新..."
-        /root/.acme.sh/acme.sh --upgrade 2>&1 | tee /tmp/acme_upgrade.log || true
-        log_success "ACME客户端已是最新版本"
+        /root/.acme.sh/acme.sh --upgrade >/dev/null 2>&1 || true
+        log_success "ACME客户端更新完成"
+    else
+        log_info "下载并安装ACME客户端..."
         
-        # 配置并返回
-        ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh 2>/dev/null || true
-        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-        log_success "ACME客户端配置完成"
-        return 0
-    fi
-    
-    log_info "开始安装ACME客户端..."
-    local install_success=false
-    
-    # 方法1: Git克隆安装（IPv6环境首选）
-    if [[ $NETWORK_MODE == "ipv6" ]] || command -v git >/dev/null 2>&1; then
-        log_info "方法1: 使用Git克隆安装（最可靠）..."
+        # 根据网络环境选择下载方式
+        local install_success=false
         
-        # 确保Git已安装
-        if ! command -v git >/dev/null 2>&1; then
-            log_info "正在安装Git..."
-            $INSTALL_CMD git 2>&1 | tee /tmp/git_install.log
-        fi
-        
-        if command -v git >/dev/null 2>&1; then
-            log_info "从GitHub克隆ACME.sh仓库..."
-            cd /root
-            
-            # 清理可能存在的旧目录
-            rm -rf /tmp/acme.sh.git
-            
-            # 克隆仓库（带超时和进度显示）
-            echo "正在克隆，预计需要10-30秒..."
-            timeout 120 git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /tmp/acme.sh.git 2>&1 | tee /tmp/acme_git_clone.log
-            
-            # 检查克隆是否真正成功（检查目录和关键文件）
-            if [[ -d "/tmp/acme.sh.git" ]] && [[ -f "/tmp/acme.sh.git/acme.sh" ]]; then
-                log_success "仓库克隆成功"
-                
-                # 执行安装
-                cd /tmp/acme.sh.git
-                log_info "执行安装脚本..."
-                if ./acme.sh --install --home /root/.acme.sh --config-home /root/.acme.sh 2>&1 | tee /tmp/acme_install.log; then
-                    log_success "ACME客户端安装成功 (Git方式)"
-                    install_success=true
-                else
-                    log_warning "Git方式安装失败"
-                    cat /tmp/acme_install.log 2>/dev/null | tail -20
-                fi
-                
-                # 清理
-                cd /root
-                rm -rf /tmp/acme.sh.git
-            else
-                log_warning "Git克隆失败或超时"
-                echo -e "${YELLOW}错误信息:${NC}"
-                cat /tmp/acme_git_clone.log 2>/dev/null | grep -i "fatal\|error\|failed" || cat /tmp/acme_git_clone.log 2>/dev/null | tail -10
-                
-                # 清理失败的克隆
-                rm -rf /tmp/acme.sh.git
-                cd /root
+        if [[ $USE_IPV6_ONLY == true ]]; then
+            # IPv6环境：使用curl的--ipv6参数
+            log_info "使用IPv6模式下载..."
+            if curl --ipv6 https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
+                install_success=true
+            elif wget --inet6-only -O- https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
+                install_success=true
             fi
         else
-            log_warning "Git安装失败，跳过Git方式"
-        fi
-    fi
-    
-    # 方法2: curl安装
-    if [[ $install_success == false ]] && command -v curl >/dev/null 2>&1; then
-        log_info "方法2: 使用curl安装..."
-        
-        # IPv6环境强制使用-6
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
-            echo "使用IPv6模式下载..."
-            if timeout 60 curl -6 -sSL https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_curl.log; then
+            # 标准安装
+            if curl https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
                 install_success=true
-                log_success "ACME客户端安装成功 (curl -6)"
-            else
-                log_warning "curl IPv6模式失败"
-                cat /tmp/acme_install_curl.log 2>/dev/null | tail -20
+            elif wget -O- https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
+                install_success=true
             fi
+        fi
+        
+        if [[ $install_success == true ]]; then
+            log_success "ACME客户端安装成功"
         else
-            if timeout 60 curl -sSL https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_curl.log; then
-                install_success=true
-                log_success "ACME客户端安装成功 (curl)"
-            else
-                log_warning "curl安装失败"
-                cat /tmp/acme_install_curl.log 2>/dev/null | tail -20
-            fi
+            log_error "ACME客户端安装失败"
+            exit 1
         fi
     fi
-    
-    # 方法3: wget安装
-    if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
-        log_info "方法3: 使用wget安装..."
-        
-        # IPv6环境
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
-            echo "使用IPv6模式下载..."
-            if timeout 60 wget -6 --no-check-certificate -O- https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_wget.log; then
-                install_success=true
-                log_success "ACME客户端安装成功 (wget -6)"
-            else
-                log_warning "wget IPv6模式失败"
-                cat /tmp/acme_install_wget.log 2>/dev/null | tail -20
-            fi
-        else
-            if timeout 60 wget --no-check-certificate -O- https://get.acme.sh 2>&1 | sh -s 2>&1 | tee /tmp/acme_install_wget.log; then
-                install_success=true
-                log_success "ACME客户端安装成功 (wget)"
-            else
-                log_warning "wget安装失败"
-                cat /tmp/acme_install_wget.log 2>/dev/null | tail -20
-            fi
-        fi
-    fi
-    
-    # 最终检查安装结果
-    if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-        install_success=true
-    fi
-    
-    if [[ $install_success == false ]]; then
-        log_error "ACME客户端安装失败 - 所有方法均失败"
-        echo ""
-        echo -e "${RED}================================================${NC}"
-        echo -e "${RED}          安装失败诊断${NC}"
-        echo -e "${RED}================================================${NC}"
-        echo ""
-        
-        echo -e "${YELLOW}已尝试的方法:${NC}"
-        echo "  1. Git克隆安装"
-        echo "  2. curl在线安装"
-        echo "  3. wget在线安装"
-        echo ""
-        
-        echo -e "${YELLOW}请检查以下问题:${NC}"
-        echo "  1. 网络连接是否正常"
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
-            echo "  2. IPv6连接测试: ping6 -c 4 google.com"
-            echo "  3. GitHub访问测试: curl -6 -I https://github.com"
-            echo "  4. DNS测试: nslookup -query=AAAA github.com"
-        else
-            echo "  2. 网络测试: ping -c 4 google.com"
-            echo "  3. GitHub访问: curl -I https://github.com"
-        fi
-        echo ""
-        
-        echo -e "${YELLOW}查看详细日志:${NC}"
-        echo "  Git日志: cat /tmp/acme_git_clone.log"
-        echo "  安装日志: cat /tmp/acme_install.log"
-        echo "  curl日志: cat /tmp/acme_install_curl.log"
-        echo "  wget日志: cat /tmp/acme_install_wget.log"
-        echo ""
-        
-        echo -e "${YELLOW}手动安装方法:${NC}"
-        echo "  cd /root"
-        echo "  git clone https://github.com/acmesh-official/acme.sh.git"
-        echo "  cd acme.sh"
-        echo "  ./acme.sh --install"
-        echo ""
-        
-        exit 1
-    fi
-    
-    # 配置ACME客户端
-    log_info "配置ACME客户端..."
     
     # 创建软链接
     ln -sf /root/.acme.sh/acme.sh /usr/local/bin/acme.sh 2>/dev/null || true
     
-    # 设置默认CA为Let's Encrypt
-    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>&1 | tee /tmp/acme_config.log || true
+    # 配置默认CA
+    log_info "配置证书颁发机构 (Let's Encrypt)..."
+    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
     
-    # IPv6环境额外配置
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        log_info "配置IPv6专用设置..."
-        mkdir -p /root/.acme.sh/
-        
-        # 确保使用wget（对IPv6支持更好）
-        if ! grep -q "ACME_USE_WGET" /root/.acme.sh/account.conf 2>/dev/null; then
-            echo 'export ACME_USE_WGET=1' >> /root/.acme.sh/account.conf
-        fi
-        
-        log_info "IPv6配置完成"
-    fi
-    
-    log_success "ACME客户端安装配置完成"
-    log_info "版本信息:"
-    /root/.acme.sh/acme.sh --version 2>/dev/null || echo "无法获取版本信息"
+    log_success "ACME客户端配置完成"
 }
 
-# 申请SSL证书 (支持IPv6)
+# 申请SSL证书
 request_ssl_certificate() {
     log_step "申请SSL证书..."
     
@@ -732,35 +578,34 @@ request_ssl_certificate() {
     log_info "开始申请证书..."
     echo -e "${YELLOW}域名: ${DOMAINS[*]}${NC}"
     echo -e "${YELLOW}使用Standalone模式，请确保80端口可访问${NC}"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo -e "${CYAN}IPv6环境: 将使用IPv6进行验证${NC}"
+    
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        echo -e "${YELLOW}IPv6模式: 将使用IPv6地址进行验证${NC}"
     fi
     echo ""
     
-    # 构建ACME命令参数
+    # 申请证书
+    echo "正在申请证书，请耐心等待..."
+    
     local acme_cmd="/root/.acme.sh/acme.sh --issue $domain_args --standalone --force"
     
     # IPv6环境添加特殊参数
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        # 使用IPv6监听
+    if [[ $USE_IPV6_ONLY == true ]]; then
         acme_cmd="$acme_cmd --listen-v6"
-        log_info "已启用IPv6监听模式"
     fi
     
-    # 申请证书
-    echo "正在申请证书，请耐心等待..."
     if eval "$acme_cmd"; then
         log_success "SSL证书申请成功！"
     else
         log_error "SSL证书申请失败"
         echo -e "${YELLOW}可能的原因:${NC}"
-        if [[ $NETWORK_MODE == "ipv6" ]]; then
-            echo "  • 域名AAAA记录未正确解析到本服务器IPv6地址"
-            echo "  • 防火墙阻止IPv6的80端口访问"
-        else
-            echo "  • 域名未正确解析到本服务器"
-            echo "  • 防火墙阻止80端口访问"
+        echo "  • 域名未正确解析到本服务器"
+        
+        if [[ $USE_IPV6_ONLY == true ]]; then
+            echo "  • 域名缺少AAAA记录或IPv6解析不正确"
         fi
+        
+        echo "  • 防火墙阻止80端口访问"
         echo "  • Let's Encrypt服务暂时不可用"
         
         # 重启服务后退出
@@ -884,13 +729,8 @@ show_completion_info() {
     echo "  证书文件: $CERT_DIR/fullchain.cer"
     echo "  CA证书: $CERT_DIR/ca.cer"
     
-    # 显示网络模式
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo -e "  ${CYAN}网络模式: 仅IPv6${NC}"
-    elif [[ $NETWORK_MODE == "dual" ]]; then
-        echo -e "  ${GREEN}网络模式: IPv4/IPv6双栈${NC}"
-    else
-        echo -e "  ${BLUE}网络模式: 仅IPv4${NC}"
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        echo -e "  ${YELLOW}网络模式: 仅IPv6${NC}"
     fi
     
     # 显示证书有效期
@@ -907,25 +747,18 @@ show_completion_info() {
     echo -e "${BLUE}Nginx 配置:${NC}"
     echo "  ssl_certificate $CERT_DIR/fullchain.cer;"
     echo "  ssl_certificate_key $CERT_DIR/private.key;"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
+    
+    if [[ $USE_IPV6_ONLY == true ]]; then
         echo ""
-        echo -e "${CYAN}IPv6环境额外配置:${NC}"
+        echo -e "${YELLOW}IPv6环境额外配置:${NC}"
         echo "  listen [::]:443 ssl http2;"
-        echo "  # 如需同时支持IPv4和IPv6:"
-        echo "  # listen 443 ssl http2;"
-        echo "  # listen [::]:443 ssl http2;"
+        echo "  # 确保监听IPv6地址"
     fi
+    
     echo ""
     echo -e "${BLUE}Apache 配置:${NC}"
     echo "  SSLCertificateFile $CERT_DIR/fullchain.cer"
     echo "  SSLCertificateKeyFile $CERT_DIR/private.key"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo ""
-        echo -e "${CYAN}IPv6环境额外配置:${NC}"
-        echo "  <VirtualHost [::]:443>"
-        echo "  # 或同时监听IPv4和IPv6:"
-        echo "  # <VirtualHost *:443 [::]:443>"
-    fi
     echo ""
     
     echo -e "${YELLOW}管理命令:${NC}"
@@ -937,11 +770,13 @@ show_completion_info() {
     echo -e "${GREEN}注意事项:${NC}"
     echo "  ✓ 证书已设置自动续期 (每天凌晨2点检查)"
     echo "  ✓ 请确保防火墙开放80和443端口"
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo "  ✓ ${CYAN}IPv6环境: 确保防火墙同时允许IPv6访问${NC}"
-        echo "  ✓ ${CYAN}IPv6环境: Web服务器需配置IPv6监听${NC}"
-    fi
     echo "  ✓ 重新配置Web服务器后记得重启服务"
+    
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        echo -e "  ${YELLOW}✓ IPv6环境: 确保域名AAAA记录正确配置${NC}"
+        echo -e "  ${YELLOW}✓ IPv6环境: 防火墙需要允许IPv6流量${NC}"
+    fi
+    
     echo ""
     
     # 显示服务状态
@@ -954,15 +789,6 @@ show_completion_info() {
                 echo -e "  ${RED}✗ $service: 未运行${NC}"
             fi
         done
-        echo ""
-    fi
-    
-    # IPv6特殊提示
-    if [[ $NETWORK_MODE == "ipv6" ]]; then
-        echo -e "${YELLOW}IPv6环境特别提示:${NC}"
-        echo "  • 确保域名有正确的AAAA记录"
-        echo "  • 确保Web服务器监听IPv6地址"
-        echo "  • 测试命令: curl -6 https://$MAIN_DOMAIN"
         echo ""
     fi
     
@@ -986,7 +812,8 @@ main() {
     
     # 执行检查和配置步骤
     check_root
-    detect_network_type  # 检测网络类型
+    detect_network_stack
+    configure_ipv6_dns
     check_network
     detect_os
     
