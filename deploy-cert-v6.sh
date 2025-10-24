@@ -519,37 +519,79 @@ install_acme_client() {
     # 检查是否已安装
     if [[ -f "/root/.acme.sh/acme.sh" ]]; then
         log_info "ACME客户端已安装，检查更新..."
-        /root/.acme.sh/acme.sh --upgrade >/dev/null 2>&1 || true
+        /root/.acme.sh/acme.sh --upgrade 2>&1 | tail -5 || true
         log_success "ACME客户端更新完成"
     else
         log_info "下载并安装ACME客户端..."
         
+        # 创建临时目录
+        local temp_dir=$(mktemp -d)
+        cd "$temp_dir" || exit 1
+        
         # 根据网络环境选择下载方式
         local install_success=false
+        local install_log=""
         
         if [[ $USE_IPV6_ONLY == true ]]; then
             # IPv6环境：使用curl的--ipv6参数
             log_info "使用IPv6模式下载..."
-            if curl --ipv6 https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
-                install_success=true
-            elif wget --inet6-only -O- https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
-                install_success=true
+            
+            # 尝试curl
+            if command -v curl >/dev/null 2>&1; then
+                log_info "尝试使用curl下载..."
+                install_log=$(curl -6 https://get.acme.sh 2>&1 | sh 2>&1)
+                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                    install_success=true
+                fi
+            fi
+            
+            # 尝试wget
+            if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
+                log_info "尝试使用wget下载..."
+                install_log=$(wget -6 -O- https://get.acme.sh 2>&1 | sh 2>&1)
+                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                    install_success=true
+                fi
             fi
         else
             # 标准安装
-            if curl https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
-                install_success=true
-            elif wget -O- https://get.acme.sh 2>/dev/null | sh >/dev/null 2>&1; then
-                install_success=true
+            if command -v curl >/dev/null 2>&1; then
+                log_info "尝试使用curl下载..."
+                install_log=$(curl https://get.acme.sh 2>&1 | sh 2>&1)
+                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                    install_success=true
+                fi
+            fi
+            
+            if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
+                log_info "尝试使用wget下载..."
+                install_log=$(wget -O- https://get.acme.sh 2>&1 | sh 2>&1)
+                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                    install_success=true
+                fi
             fi
         fi
+        
+        # 返回原目录
+        cd - >/dev/null || true
+        rm -rf "$temp_dir"
         
         if [[ $install_success == true ]]; then
             log_success "ACME客户端安装成功"
         else
             log_error "ACME客户端安装失败"
+            echo -e "${YELLOW}安装日志:${NC}"
+            echo "$install_log" | tail -20
+            echo ""
+            log_error "请检查网络连接或手动安装"
             exit 1
         fi
+    fi
+    
+    # 验证安装
+    if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
+        log_error "ACME客户端文件不存在，安装可能失败"
+        exit 1
     fi
     
     # 创建软链接
@@ -557,9 +599,16 @@ install_acme_client() {
     
     # 配置默认CA
     log_info "配置证书颁发机构 (Let's Encrypt)..."
-    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
+    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt 2>&1 | grep -v "^\[" || true
     
-    log_success "ACME客户端配置完成"
+    # 最终验证
+    if /root/.acme.sh/acme.sh --version >/dev/null 2>&1; then
+        local version=$(/root/.acme.sh/acme.sh --version 2>/dev/null | head -1)
+        log_success "ACME客户端配置完成 ($version)"
+    else
+        log_error "ACME客户端验证失败"
+        exit 1
+    fi
 }
 
 # 申请SSL证书
