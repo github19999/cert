@@ -481,29 +481,39 @@ install_dependencies() {
     
     # 更新包列表
     log_info "更新系统包列表..."
-    if $UPDATE_CMD >/dev/null 2>&1; then
+    if timeout 60 $UPDATE_CMD >/dev/null 2>&1; then
         log_success "包列表更新完成"
     else
-        log_warning "包列表更新失败，继续执行"
+        log_warning "包列表更新失败或超时，继续执行"
     fi
     
     # 根据系统安装依赖
     local packages=""
     case $OS in
         "debian")
-            packages="curl wget socat cron openssl ca-certificates dnsutils"
+            packages="curl wget socat cron openssl ca-certificates dnsutils git timeout"
             ;;
         "centos")
-            packages="curl wget socat cronie openssl ca-certificates bind-utils"
+            packages="curl wget socat cronie openssl ca-certificates bind-utils git coreutils"
             ;;
     esac
     
     log_info "安装必要依赖: $packages"
-    if $INSTALL_CMD $packages >/dev/null 2>&1; then
+    if timeout 120 $INSTALL_CMD $packages 2>&1 | tail -5; then
         log_success "依赖安装完成"
     else
         log_warning "部分依赖安装失败，但将继续执行"
     fi
+    
+    # 验证关键工具
+    log_info "验证关键工具..."
+    for tool in curl wget git; do
+        if command -v $tool >/dev/null 2>&1; then
+            echo "  ✓ $tool"
+        else
+            echo "  ✗ $tool (未安装)"
+        fi
+    done
     
     # 启动cron服务
     if command -v systemctl >/dev/null 2>&1; then
