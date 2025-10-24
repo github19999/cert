@@ -512,6 +512,20 @@ install_dependencies() {
     fi
 }
 
+# 测试IPv6连接到GitHub
+test_github_ipv6() {
+    log_info "测试GitHub IPv6连接..."
+    
+    # 测试raw.githubusercontent.com的IPv6连接
+    if ping -6 -c 2 -W 3 raw.githubusercontent.com >/dev/null 2>&1; then
+        log_success "GitHub IPv6连接正常"
+        return 0
+    else
+        log_warning "无法通过IPv6连接到GitHub"
+        return 1
+    fi
+}
+
 # 安装ACME.sh客户端
 install_acme_client() {
     log_step "安装ACME证书客户端..."
@@ -521,76 +535,128 @@ install_acme_client() {
         log_info "ACME客户端已安装，检查更新..."
         /root/.acme.sh/acme.sh --upgrade 2>&1 | tail -5 || true
         log_success "ACME客户端更新完成"
+        return 0
+    fi
+    
+    log_info "下载并安装ACME客户端..."
+    
+    # 创建临时目录
+    local temp_dir=$(mktemp -d)
+    cd "$temp_dir" || exit 1
+    
+    local install_success=false
+    local install_log=""
+    
+    if [[ $USE_IPV6_ONLY == true ]]; then
+        log_info "IPv6环境检测，测试网络连接..."
+        
+        # 测试GitHub连接
+        if ! test_github_ipv6; then
+            log_warning "GitHub IPv6连接异常，尝试配置NAT64..."
+            
+            # 尝试使用NAT64 DNS
+            echo "nameserver 2001:67c:2b0::4" > /etc/resolv.conf
+            echo "nameserver 2001:67c:2b0::6" >> /etc/resolv.conf
+            
+            sleep 2
+            
+            if test_github_ipv6; then
+                log_success "NAT64 DNS配置成功"
+            else
+                log_error "无法建立IPv6连接到GitHub"
+                echo ""
+                echo -e "${YELLOW}可能的解决方案:${NC}"
+                echo "1. 检查VPS的IPv6网络配置"
+                echo "2. 联系VPS提供商确认IPv6网络是否可用"
+                echo "3. 尝试手动安装acme.sh:"
+                echo "   git clone https://github.com/acmesh-official/acme.sh.git"
+                echo "   cd acme.sh"
+                echo "   ./acme.sh --install"
+                cd - >/dev/null || true
+                rm -rf "$temp_dir"
+                exit 1
+            fi
+        fi
+        
+        # 方法1: 使用curl下载
+        if command -v curl >/dev/null 2>&1; then
+            log_info "方法1: 使用curl -6下载..."
+            install_log=$(curl -6 -sS --connect-timeout 30 https://get.acme.sh 2>&1 | sh 2>&1)
+            if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                install_success=true
+                log_success "curl下载成功"
+            else
+                log_warning "curl下载失败"
+                echo "$install_log" | tail -10
+            fi
+        fi
+        
+        # 方法2: 使用wget下载
+        if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
+            log_info "方法2: 使用wget -6下载..."
+            install_log=$(wget -6 --timeout=30 -O- https://get.acme.sh 2>&1 | sh 2>&1)
+            if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                install_success=true
+                log_success "wget下载成功"
+            else
+                log_warning "wget下载失败"
+                echo "$install_log" | tail -10
+            fi
+        fi
+        
+        # 方法3: 使用git克隆（如果可用）
+        if [[ $install_success == false ]] && command -v git >/dev/null 2>&1; then
+            log_info "方法3: 使用git克隆仓库..."
+            if git clone https://github.com/acmesh-official/acme.sh.git /root/.acme.sh 2>&1; then
+                cd /root/.acme.sh || exit 1
+                if ./acme.sh --install 2>&1; then
+                    install_success=true
+                    log_success "git克隆安装成功"
+                fi
+            fi
+        fi
+        
     else
-        log_info "下载并安装ACME客户端..."
-        
-        # 创建临时目录
-        local temp_dir=$(mktemp -d)
-        cd "$temp_dir" || exit 1
-        
-        # 根据网络环境选择下载方式
-        local install_success=false
-        local install_log=""
-        
-        if [[ $USE_IPV6_ONLY == true ]]; then
-            # IPv6环境：使用curl的--ipv6参数
-            log_info "使用IPv6模式下载..."
-            
-            # 尝试curl
-            if command -v curl >/dev/null 2>&1; then
-                log_info "尝试使用curl下载..."
-                install_log=$(curl -6 https://get.acme.sh 2>&1 | sh 2>&1)
-                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-                    install_success=true
-                fi
-            fi
-            
-            # 尝试wget
-            if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
-                log_info "尝试使用wget下载..."
-                install_log=$(wget -6 -O- https://get.acme.sh 2>&1 | sh 2>&1)
-                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-                    install_success=true
-                fi
-            fi
-        else
-            # 标准安装
-            if command -v curl >/dev/null 2>&1; then
-                log_info "尝试使用curl下载..."
-                install_log=$(curl https://get.acme.sh 2>&1 | sh 2>&1)
-                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-                    install_success=true
-                fi
-            fi
-            
-            if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
-                log_info "尝试使用wget下载..."
-                install_log=$(wget -O- https://get.acme.sh 2>&1 | sh 2>&1)
-                if [[ -f "/root/.acme.sh/acme.sh" ]]; then
-                    install_success=true
-                fi
+        # 标准IPv4/双栈安装
+        if command -v curl >/dev/null 2>&1; then
+            log_info "使用curl下载..."
+            install_log=$(curl -sS https://get.acme.sh 2>&1 | sh 2>&1)
+            if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                install_success=true
             fi
         fi
         
-        # 返回原目录
-        cd - >/dev/null || true
-        rm -rf "$temp_dir"
-        
-        if [[ $install_success == true ]]; then
-            log_success "ACME客户端安装成功"
-        else
-            log_error "ACME客户端安装失败"
-            echo -e "${YELLOW}安装日志:${NC}"
-            echo "$install_log" | tail -20
-            echo ""
-            log_error "请检查网络连接或手动安装"
-            exit 1
+        if [[ $install_success == false ]] && command -v wget >/dev/null 2>&1; then
+            log_info "使用wget下载..."
+            install_log=$(wget -O- https://get.acme.sh 2>&1 | sh 2>&1)
+            if [[ -f "/root/.acme.sh/acme.sh" ]]; then
+                install_success=true
+            fi
         fi
+    fi
+    
+    # 返回原目录
+    cd - >/dev/null || true
+    rm -rf "$temp_dir"
+    
+    if [[ $install_success == true ]]; then
+        log_success "ACME客户端安装成功"
+    else
+        log_error "ACME客户端安装失败"
+        echo ""
+        echo -e "${YELLOW}详细日志:${NC}"
+        echo "$install_log" | tail -30
+        echo ""
+        echo -e "${YELLOW}请尝试:${NC}"
+        echo "1. 检查网络连接: ping -6 raw.githubusercontent.com"
+        echo "2. 检查DNS解析: nslookup raw.githubusercontent.com"
+        echo "3. 手动安装: git clone https://github.com/acmesh-official/acme.sh.git && cd acme.sh && ./acme.sh --install"
+        exit 1
     fi
     
     # 验证安装
     if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
-        log_error "ACME客户端文件不存在，安装可能失败"
+        log_error "ACME客户端文件不存在"
         exit 1
     fi
     
@@ -615,6 +681,12 @@ install_acme_client() {
 request_ssl_certificate() {
     log_step "申请SSL证书..."
     
+    # 验证ACME客户端是否存在
+    if [[ ! -f "/root/.acme.sh/acme.sh" ]]; then
+        log_error "ACME客户端未安装，请重新运行脚本"
+        exit 1
+    fi
+    
     # 管理Web服务 (停止)
     manage_web_services "stop"
     
@@ -636,26 +708,68 @@ request_ssl_certificate() {
     # 申请证书
     echo "正在申请证书，请耐心等待..."
     
-    local acme_cmd="/root/.acme.sh/acme.sh --issue $domain_args --standalone --force"
+    # 构建命令
+    local acme_cmd="/root/.acme.sh/acme.sh --issue $domain_args --standalone --force --log"
     
     # IPv6环境添加特殊参数
     if [[ $USE_IPV6_ONLY == true ]]; then
         acme_cmd="$acme_cmd --listen-v6"
     fi
     
-    if eval "$acme_cmd"; then
+    # 显示执行的命令（调试用）
+    log_info "执行命令: $acme_cmd"
+    echo ""
+    
+    # 执行证书申请，显示实时输出
+    if eval "$acme_cmd" 2>&1; then
+        echo ""
         log_success "SSL证书申请成功！"
     else
+        echo ""
         log_error "SSL证书申请失败"
+        echo ""
         echo -e "${YELLOW}可能的原因:${NC}"
         echo "  • 域名未正确解析到本服务器"
         
         if [[ $USE_IPV6_ONLY == true ]]; then
             echo "  • 域名缺少AAAA记录或IPv6解析不正确"
+            echo "  • 服务器IPv6地址配置问题"
         fi
         
         echo "  • 防火墙阻止80端口访问"
         echo "  • Let's Encrypt服务暂时不可用"
+        echo ""
+        
+        # 显示诊断信息
+        echo -e "${CYAN}诊断信息:${NC}"
+        
+        # 显示本机IP
+        echo "本机IP地址:"
+        if [[ $USE_IPV6_ONLY == true ]]; then
+            ip -6 addr show | grep "inet6.*global" | head -3
+        else
+            ip addr show | grep "inet " | grep -v "127.0.0.1"
+        fi
+        echo ""
+        
+        # 检查域名解析
+        echo "域名解析检查:"
+        for domain in "${DOMAINS[@]}"; do
+            echo -n "  $domain: "
+            if [[ $USE_IPV6_ONLY == true ]]; then
+                nslookup -type=AAAA "$domain" 2>&1 | grep "Address:" | tail -1
+            else
+                nslookup "$domain" 2>&1 | grep "Address:" | tail -1
+            fi
+        done
+        echo ""
+        
+        # 检查80端口
+        echo "端口80监听状态:"
+        if command -v ss >/dev/null 2>&1; then
+            ss -tlnp | grep ":80 " || echo "  端口80未被监听"
+        fi
+        echo ""
         
         # 重启服务后退出
         manage_web_services "start"
