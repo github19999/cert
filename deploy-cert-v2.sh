@@ -36,13 +36,15 @@
 #           每域名每周5次证书颁发限额
 #   - 新版: 改用 --list 展示证书列表，验证配置正确无副作用
 #
-# 【优化5 - 交互体验】三处确认提示改用 read -e -i 预填默认值
-#   原版使用 [直接回车=X] 文字提示 + 变量赋值兜底，视觉上不够直观。
-#   新版使用 read -e -i "<默认值>" 将默认值直接预填在输入框中，
-#   用户可直接回车确认，也可退格修改，交互更自然，提示更简洁。
-#   - configure_domains(): "确认域名配置正确? (Y/n) → " 预填 Y
-#   - configure_cert_path(): "请选择 (1-5) → " 预填 1（标准路径）
-#   - manage_web_services(): "是否停止这些服务以进行证书申请? (Y/n) → " 预填 Y
+# 【优化5 - 交互体验】三处确认提示统一改为编号菜单 + [默认] 标记风格
+#   原版使用纯文字提示，用户不直观；后改用 read -e -i 预填值，依赖 readline
+#   在部分系统/终端下兼容性差。新版统一改为编号菜单形式：
+#     - 选项以编号列出，默认项末尾标注 [默认]
+#     - 提示行显示 "请选择 (1-N) [默认回车]1:"，含义一目了然
+#     - 通过 var=${var:-1} 实现回车自动取默认值，兼容所有终端
+#   - configure_domains(): "确认域名配置正确?" 展示 1)Y[默认] 2)N 菜单
+#   - configure_cert_path(): 选项列表中选项1末尾加 [默认] 标记
+#   - manage_web_services(): "是否停止这些服务?" 展示 1)Y[默认] 2)N 菜单
 #     同时保留说明文字，告知首次停服属正常流程，续期后自动重启无需干预
 #
 # ==============================================================================
@@ -237,8 +239,12 @@ configure_domains() {
         echo "  域名数量: ${#DOMAINS[@]}"
         echo ""
 
-        read -e -i "Y" -p "确认域名配置正确? (Y/n) → " confirm
-        if [[ -z "$confirm" || "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "确认域名配置正确? :"
+        echo "  1) Y/y [默认]"
+        echo "  2) N/n"
+        read -p "请选择 (1-2) [默认回车]1: " confirm_choice
+        confirm_choice=${confirm_choice:-1}
+        if [[ "$confirm_choice" == "1" || "$confirm_choice" =~ ^[Yy]$ ]]; then
             break
         fi
         echo ""
@@ -252,7 +258,7 @@ configure_cert_path() {
     log_step "配置证书存储路径..."
 
     echo -e "${CYAN}请选择证书安装位置:${NC}"
-    echo "  1) 标准路径 (/etc/ssl/private/)"
+    echo "  1) 标准路径 (/etc/ssl/private/) [默认]"
     echo "  2) Nginx专用 (/etc/nginx/ssl/)"
     echo "  3) Apache专用 (/etc/apache2/ssl/)"
     echo "  4) 用户目录 (/home/ssl/)"
@@ -260,7 +266,8 @@ configure_cert_path() {
     echo ""
 
     while true; do
-        read -e -i "1" -p "请选择 (1-5) → " path_choice
+        read -p "请选择 (1-5) [默认回车]1: " path_choice
+        path_choice=${path_choice:-1}
 
         case $path_choice in
             1)
@@ -343,9 +350,13 @@ manage_web_services() {
                 echo -e "${YELLOW}发现运行中的Web服务: ${found_services[*]}${NC}"
                 echo -e "${CYAN}[说明] 首次申请证书需临时停止 Web 服务以占用80端口完成验证。"
                 echo -e "       证书申请完成后将立即自动重启，且后续自动续期无需手动干预。${NC}"
-                read -e -i "Y" -p "是否停止这些服务以进行证书申请? (Y/n) → " stop_confirm
+                echo -e "是否停止这些服务以进行证书申请? :"
+                echo "  1) Y/y [默认]"
+                echo "  2) N/n"
+                read -p "请选择 (1-2) [默认回车]1: " stop_choice
+                stop_choice=${stop_choice:-1}
 
-                if [[ -z "$stop_confirm" || "$stop_confirm" =~ ^[Yy]$ ]]; then
+                if [[ "$stop_choice" == "1" || "$stop_choice" =~ ^[Yy]$ ]]; then
                     for service in "${found_services[@]}"; do
                         log_info "停止服务: $service"
                         if systemctl stop "$service"; then
