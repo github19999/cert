@@ -36,6 +36,14 @@
 #           每域名每周5次证书颁发限额
 #   - 新版: 改用 --list 展示证书列表，验证配置正确无副作用
 #
+# 【优化5 - 交互体验】三处确认提示增加回车键默认选择
+#   - configure_domains(): "确认域名配置正确?" 回车默认 Y
+#   - configure_cert_path(): "请选择证书安装位置" 回车默认选项1（标准路径）
+#     通过 path_choice=${path_choice:-1} 实现空输入自动赋值
+#   - manage_web_services(): "是否停止这些服务以进行证书申请?" 回车默认 Y
+#     同时新增说明文字，告知用户首次申请需临时停止服务属正常流程，
+#     证书申请完成后立即自动重启，后续自动续期无需手动干预
+#
 # ==============================================================================
 
 set -e  # 遇到错误立即退出
@@ -228,7 +236,7 @@ configure_domains() {
         echo "  域名数量: ${#DOMAINS[@]}"
         echo ""
 
-        read -p "确认域名配置正确? (Y/n): " confirm
+        read -p "确认域名配置正确? [直接回车=Y/n]: " confirm
         if [[ -z "$confirm" || "$confirm" =~ ^[Yy]$ ]]; then
             break
         fi
@@ -251,7 +259,10 @@ configure_cert_path() {
     echo ""
 
     while true; do
-        read -p "请选择 (1-5): " path_choice
+        read -p "请选择 (1-5) [直接回车=1]: " path_choice
+
+        # 回车默认选择1
+        path_choice=${path_choice:-1}
 
         case $path_choice in
             1)
@@ -332,7 +343,10 @@ manage_web_services() {
 
             if [[ ${#found_services[@]} -gt 0 ]]; then
                 echo -e "${YELLOW}发现运行中的Web服务: ${found_services[*]}${NC}"
-                read -p "是否停止这些服务以进行证书申请? (Y/n): " stop_confirm
+                echo -e "${CYAN}[说明] 首次申请证书需临时停止 Web 服务以占用80端口完成验证。"
+                echo -e "       证书申请完成后将立即自动重启，且后续自动续期无需手动干预。${NC}"
+                read -p "是否停止这些服务以进行证书申请? [直接回车=Y/n]: " stop_confirm
+                stop_confirm=${stop_confirm:-Y}
 
                 if [[ -z "$stop_confirm" || "$stop_confirm" =~ ^[Yy]$ ]]; then
                     for service in "${found_services[@]}"; do
